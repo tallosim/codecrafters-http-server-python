@@ -1,4 +1,6 @@
+import os
 import re
+import argparse
 import socket
 import threading
 
@@ -23,7 +25,7 @@ class HTTPRequest:
 
 
 class HTTPResponse:
-    def __init__(self, status_code: int = 200, headers: dict = {}, body: str = ""):
+    def __init__(self, status_code: int = 200, headers: dict = {}, body: bytes | str = b""):
         self.status_code = status_code
 
         self.headers = headers
@@ -47,11 +49,11 @@ class HTTPResponse:
             + CRLF
             + f"{''.join([f'{key}: {value}{CRLF}' for key, value in self.headers.items()])}"
             + CRLF
-            + f"{self.body}"
+            + f"{self.body.decode() if isinstance(self.body, bytes) else self.body}"
         )
 
 
-def handle_client(client_socket: socket.socket, debug: bool = False):
+def handle_client(client_socket: socket.socket, directory: str, debug: bool = False):
     try:
         # Receive data from the client and parse the HTTP request
         data = client_socket.recv(1024)
@@ -62,6 +64,7 @@ def handle_client(client_socket: socket.socket, debug: bool = False):
 
         # Make a decision based on the path of the request
         echo_match = re.match(r"^\/echo\/(.*)$", request.path)
+        files_match = re.match(r"^\/files\/(.*)$", request.path)
 
         if request.path == "/":
             response = HTTPResponse()
@@ -71,6 +74,15 @@ def handle_client(client_socket: socket.socket, debug: bool = False):
 
         elif echo_match:
             response = HTTPResponse(body=echo_match.group(1))
+
+        elif files_match:
+            file_path = os.path.join(directory, files_match.group(1))
+
+            if os.path.exists(file_path):
+                with open(file_path, "rb") as file:
+                    response = HTTPResponse(headers={"Content-Type": "application/octet-stream"}, body=file.read())
+            else:
+                response = HTTPResponse(status_code=404)
 
         else:
             response = HTTPResponse(status_code=404)
@@ -87,7 +99,15 @@ def handle_client(client_socket: socket.socket, debug: bool = False):
         client_socket.close()
 
 
-def main():
+def main(directory: str, debug: bool = False):
+    # Check if the directory exists
+    if not os.path.exists(directory):
+        raise FileNotFoundError(f"Directory {directory} does not exist")
+    
+    if debug:
+        print(f"Serving files from {directory}")
+
+    # Create a server socket
     server_socket = socket.create_server(("localhost", 4221), reuse_port=True)
 
     while True:
@@ -95,8 +115,15 @@ def main():
         client_socket, client_address = server_socket.accept()
 
         # Handle the client in a separate thread
-        threading.Thread(target=handle_client, args=(client_socket, True)).start()
+        threading.Thread(target=handle_client, args=(client_socket, directory, debug)).start()
 
 
 if __name__ == "__main__":
-    main()
+    praser = argparse.ArgumentParser()
+
+    praser.add_argument("--directory", type=str, default=".", help="Directory to serve files from")
+    praser.add_argument("--debug", action="store_true", help="Enable debug mode")
+
+    args = praser.parse_args()
+
+    main(args.directory)
