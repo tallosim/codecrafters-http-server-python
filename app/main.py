@@ -3,22 +3,39 @@ import re
 import argparse
 import socket
 import threading
+import traceback
 
 CRLF = "\r\n"
+
 
 class HTTPRequest:
     def __init__(self, data: bytes):
         self.data = data.decode()
 
-        self.method, self.path, self.protocol = self.data.split(CRLF)[0].split()
-
+        # Initialize the request line, headers, and body
+        self.method = ""
+        self.path = ""
+        self.protocol = ""
         self.headers = {}
-        for header in self.data.split(CRLF)[1:]:
+        self.body = b""
+
+        # Parse the request data
+        request_line_and_headers, self.body = self.data.split(CRLF + CRLF)
+        request_line, *headers = request_line_and_headers.split(CRLF)
+
+        # Parse the request line
+        self.method, self.path, self.protocol = request_line.split()
+
+        # Parse the headers
+        for header in headers:
             if not header:
                 break
 
             key, value = header.split(": ")
             self.headers[key] = value
+
+        # Decode the body if it is encoded
+        self.body = self.body.encode() if isinstance(self.body, str) else self.body
 
     def __str__(self):
         return self.data
@@ -41,11 +58,13 @@ class HTTPResponse:
     def __str__(self):
         STATUS_CODE_STRINGS = {
             200: "OK",
+            201: "Created",
             404: "Not Found",
+            500: "Internal Server Error",
         }
 
         return (
-            f"HTTP/1.1 {self.status_code} {STATUS_CODE_STRINGS[self.status_code]}"
+            f"HTTP/1.1 {self.status_code} {STATUS_CODE_STRINGS.get(self.status_code)}"
             + CRLF
             + f"{''.join([f'{key}: {value}{CRLF}' for key, value in self.headers.items()])}"
             + CRLF
@@ -75,27 +94,39 @@ def handle_client(client_socket: socket.socket, directory: str, debug: bool = Fa
         elif echo_match:
             response = HTTPResponse(body=echo_match.group(1))
 
-        elif files_match:
+        elif files_match and request.method == "GET":
             file_path = os.path.join(directory, files_match.group(1))
 
-            if os.path.exists(file_path):
+            if os.path.exists(file_path) and os.path.isfile(file_path):
                 with open(file_path, "rb") as file:
                     response = HTTPResponse(headers={"Content-Type": "application/octet-stream"}, body=file.read())
             else:
                 response = HTTPResponse(status_code=404)
+
+        elif files_match and request.method == "POST":
+            file_path = os.path.join(directory, files_match.group(1))
+
+            with open(file_path, "wb") as file:
+                file.write(request.body)
+
+            response = HTTPResponse(status_code=201)
 
         else:
             response = HTTPResponse(status_code=404)
 
         if debug:
             print(response)
+            print("-" * 50)
 
         # Send the response back to the client
         client_socket.sendall(response.__str__().encode())
         client_socket.close()
 
-    except Exception as e:
-        print(e)
+    except Exception:
+        print(traceback.format_exc())
+
+        # Send a 500 Internal Server Error response
+        client_socket.sendall(HTTPResponse(status_code=500).__str__().encode())
         client_socket.close()
 
 
@@ -103,19 +134,27 @@ def main(directory: str, debug: bool = False):
     # Check if the directory exists
     if not os.path.exists(directory):
         raise FileNotFoundError(f"Directory {directory} does not exist")
-    
+
     if debug:
         print(f"Serving files from {directory}")
+        print("-" * 50)
 
     # Create a server socket
     server_socket = socket.create_server(("localhost", 4221), reuse_port=True)
 
     while True:
-        # Start listening for incoming connections
-        client_socket, client_address = server_socket.accept()
+        try:
+            # Start listening for incoming connections
+            client_socket, client_address = server_socket.accept()
 
-        # Handle the client in a separate thread
-        threading.Thread(target=handle_client, args=(client_socket, directory, debug)).start()
+            # Handle the client in a separate thread
+            threading.Thread(target=handle_client, args=(client_socket, directory, debug)).start()
+
+        except KeyboardInterrupt:
+            break
+
+    # Close the server socket
+    server_socket.close()
 
 
 if __name__ == "__main__":
@@ -126,4 +165,4 @@ if __name__ == "__main__":
 
     args = praser.parse_args()
 
-    main(args.directory)
+    main(args.directory, args.debug)
