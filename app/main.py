@@ -1,8 +1,8 @@
 import re
 import socket
+import threading
 
 CRLF = "\r\n"
-
 
 class HTTPRequest:
     def __init__(self, data: bytes):
@@ -51,37 +51,51 @@ class HTTPResponse:
         )
 
 
+def handle_client(client_socket: socket.socket, debug: bool = False):
+    try:
+        # Receive data from the client and parse the HTTP request
+        data = client_socket.recv(1024)
+        request = HTTPRequest(data)
+
+        if debug:
+            print(request)
+
+        # Make a decision based on the path of the request
+        echo_match = re.match(r"^\/echo\/(.*)$", request.path)
+
+        if request.path == "/":
+            response = HTTPResponse()
+
+        elif request.path == "/user-agent":
+            response = HTTPResponse(body=request.headers.get("User-Agent", ""))
+
+        elif echo_match:
+            response = HTTPResponse(body=echo_match.group(1))
+
+        else:
+            response = HTTPResponse(status_code=404)
+
+        if debug:
+            print(response)
+
+        # Send the response back to the client
+        client_socket.sendall(response.__str__().encode())
+        client_socket.close()
+
+    except Exception as e:
+        print(e)
+        client_socket.close()
+
+
 def main():
     server_socket = socket.create_server(("localhost", 4221), reuse_port=True)
 
-    # Start listening for incoming connections
-    client_socket, client_address = server_socket.accept()
+    while True:
+        # Start listening for incoming connections
+        client_socket, client_address = server_socket.accept()
 
-    # Receive data from the client and parse the HTTP request
-    data = client_socket.recv(1024)
-    request = HTTPRequest(data)
-    print(request)
-
-    # Make a decision based on the path of the request
-    echo_match = re.match(r"^\/echo\/(.*)$", request.path)
-
-    if request.path == "/":
-        response = HTTPResponse()
-
-    elif request.path == "/user-agent":
-        response = HTTPResponse(body=request.headers.get("User-Agent", ""))
-
-    elif echo_match:
-        response = HTTPResponse(body=echo_match.group(1))
-
-    else:
-        response = HTTPResponse(status_code=404)
-
-    print(response)
-
-    # Send the response back to the client
-    client_socket.sendall(response.__str__().encode())
-    client_socket.close()
+        # Handle the client in a separate thread
+        threading.Thread(target=handle_client, args=(client_socket, True)).start()
 
 
 if __name__ == "__main__":
